@@ -29,11 +29,11 @@ def XYZ_reader(fname):
 
         # read only lines actually containing all information specified in this parser
         if len(line.split()) == 4:
-            print(len(line))
+            
             xyz.append({'Element': str(line[:4].strip()),
-                        'X': float(line[4:27].strip()),
-                        'Y': float(line[27:47].strip()),
-                        'Z': float(line[47:67].strip())})
+                        'x': float(line[4:27].strip()),
+                        'y': float(line[27:47].strip()),
+                        'z': float(line[47:67].strip())})
 
 
     # transfer psf to pd Dataframe with atom number as index
