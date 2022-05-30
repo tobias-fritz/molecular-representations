@@ -31,9 +31,9 @@ def XYZ_reader(fname):
         if len(line.split()) == 4:
             
             xyz.append({'Element': str(line[:4].strip()),
-                        'x': float(line[4:27].strip()),
-                        'y': float(line[27:47].strip()),
-                        'z': float(line[47:67].strip())})
+                        'x': float(line[4:26].strip()),
+                        'y': float(line[26:46].strip()),
+                        'z': float(line[46:67].strip())})
 
 
     # transfer psf to pd Dataframe with atom number as index

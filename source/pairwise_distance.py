@@ -8,6 +8,7 @@
 # that can be inverted and normalized to unit vector columns
 #===============================================================================================
 
+from numpy import inf
 import pandas as pd
 from scipy.spatial.distance import cdist
 
@@ -28,9 +29,10 @@ def pairwise_distance_matrix(molecule,inverse = False, unit = False, normalize =
 
     # if requested compute inverse matrix with or without exponennt
     if inverse == True and not exp:
-        df_dist = 1 / df_dist
+        df_dist = (1 / df_dist).replace(inf, 0)
+        
     elif inverse == True and exp:
-        df_dist = 1 / df_dist ** exp
+        df_dist = (1 / df_dist).replace(inf, 0) ** exp
 
     # if requested normalize columns to unit vector (v / sqrt( sum(v_i ** 2) ) 
     if unit == True :
