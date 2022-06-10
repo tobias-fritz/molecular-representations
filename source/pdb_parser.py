@@ -18,33 +18,16 @@ def PDB_reader(fname):
         fname :     full or relative file path of the pdb to be read
     '''
 
-    # open the pdb file
-    with open(fname, 'r') as ff:
-        lines = ff.readlines()
-    
-    # initiate pdb file as list
-    pdb = []
+    colspecs = [(0,6),(6,11),(12,16),(17,21),(21,22),(22,26),
+                (30,38),(38,46),(46,54),(54,60),(60,66),(72,76)]
+    names = ['RecordName','Serial','AtomName','Resname','Chain',
+                'Resid','x','y','z','Occ','Beta','Segment']
 
-    # iterate over all lines 
-    for line in lines[:]: 
+    # read pdb file
+    pdb = pd.read_fwf(fname,colspecs = colspecs,names=names)
 
-        # only consider lines that contain the information
-        if line.startswith('ATOM') or line.startswith('HETATM'):
-            pdb.append({'RecordName': line[:6].strip(),
-                          'Serial': int(line[7:12]),
-                          'AtomName': line[13:17].strip(),
-                          'Resname': line[18:21].strip(),
-                          'Chain': line[22].strip(),
-                          'Resid': line[23:26].strip(),
-                          'x': float(line[31:39].strip()),
-                          'y': float(line[39:47].strip()),
-                          'z': float(line[47:55].strip()),
-                          'Occ': line[55:61].strip(),
-                          'Beta': line[61:67].strip(),
-                          'Segment': line[72:77].strip()})
-
-    # transfer pdb to pd Dataframe with atom number as index
-    # this conveniently gives the Dict keys as column names 
-    pdb = pd.DataFrame(pdb).set_index('Serial')
+    # remove lines that dont contain our molecular data and set Serial as index
+    pdb = pdb.drop(pdb.loc[pdb['RecordName']=="ATOM"].index)
+    pdb = pdb.set_index('Serial')
 
     return pdb
