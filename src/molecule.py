@@ -1,9 +1,13 @@
 from typing import List, Dict, Optional, Union
 import numpy as np
+import pandas as pd
 from dataclasses import dataclass, field
 from scipy.spatial.distance import pdist, squareform
 from itertools import combinations
-from .atom_array import AtomArray
+import torch
+from torch_geometric.data import Data
+import networkx as nx
+from typing import Optional, Dict, Any, Tuple
 
 @dataclass
 class Molecule:
@@ -12,12 +16,17 @@ class Molecule:
     name: str = "Unnamed"
     
     # Core structure attributes
-    atoms: AtomArray = field(default_factory=lambda: AtomArray(0))
+    atoms: pd.DataFrame = field(default_factory=lambda: pd.DataFrame({
+        'atom_name': [], 'atom_type': [], 'resname': [], 'resid': [],
+        'chain': [], 'segment': [], 'x': [], 'y': [], 'z': [],
+        'charge': [], 'mass': [], 'element': [], 'occupancy': [], 
+        'beta': [], 'record_name': [],
+    }))
     
     # Topology information
-    bonds: List[tuple] = field(default_factory.list)
-    angles: List[tuple] = field(default_factory.list)
-    dihedrals: List[tuple] = field(default_factory.list)
+    bonds: List[tuple] = field(default_factory=list)
+    angles: List[tuple] = field(default_factory=list)
+    dihedrals: List[tuple] = field(default_factory=list)
     impropers: List[tuple] = field(default_factory.list)
     
     # Additional properties
@@ -59,94 +68,68 @@ class Molecule:
     def _read_pdb(self, fname: str) -> None:
         """Read atomic data from PDB file"""
         with open(fname, 'r') as ff:
-            # Collect both ATOM and HETATM records
-            lines = [line for line in ff.readlines() 
-                    if line.startswith(('ATOM', 'HETATM'))]
+            lines = ff.readlines()
         
-        # Pre-allocate array
-        atoms = AtomArray(len(lines))
+        pdb = []
+        for line in lines[:]: 
+            if line.startswith('ATOM') or line.startswith('HETATM'):
+                try:
+                    pdb.append({'record_name': line[:6].strip(),
+                                'serial': int(line[7:12]),
+                                'atom_name': line[13:17].strip(),
+                                'resname': line[18:21].strip(),
+                                'chain': line[22].strip(),
+                                'resid': line[23:26].strip(),
+                                'x': float(line[31:39].strip()),
+                                'y': float(line[39:47].strip()),
+                                'z': float(line[47:55].strip()),
+                                'occupancy': line[55:61].strip(),
+                                'beta': line[61:67].strip(),
+                                'segment': line[72:77].strip()})
+                except Exception as e:
+                    raise Exception(f"Error parsing line: {line.strip()} - {e}")
         
-        for i, line in enumerate(lines):
-            try:
-                # Store record type (ATOM/HETATM)
-                record_type = line[:6].strip()
-                atoms['record_name'][i] = record_type
-                atoms['atom_name'][i] = line[12:16].strip()  # Adjusted to properly handle 4-char names
-                atoms['resname'][i] = line[17:20].strip()
-                atoms['chain'][i] = line[21:22].strip()
-                atoms['resid'][i] = int(line[22:26])  # Include insertion code position
-                
-                # Parse coordinates with safety checks
-                try:
-                    atoms['x'][i] = float(line[30:38])
-                    atoms['y'][i] = float(line[38:46])
-                    atoms['z'][i] = float(line[46:54])
-                except ValueError:
-                    raise ValueError(f"Invalid coordinates in line: {line.strip()}")
-                
-                # Optional fields - use 0.0 as default if empty/invalid
-                try:
-                    atoms['occupancy'][i] = float(line[54:60])
-                except (ValueError, IndexError):
-                    atoms['occupancy'][i] = 0.0
-                    
-                try:
-                    atoms['beta'][i] = float(line[60:66])
-                except (ValueError, IndexError):
-                    atoms['beta'][i] = 0.0
-                    
-                # Segment ID (if present)
-                if len(line) >= 77:
-                    atoms['segment'][i] = line[72:76].strip()
-                
-            except Exception as e:
-                raise Exception(f"Error parsing line: {line.strip()} - {e}")
-        
-        self.atoms = atoms
-
+        self.atoms = pd.DataFrame(pdb).set_index('serial')
+  
     def _read_xyz(self, fname: str) -> None:
         """Read atomic data from XYZ file"""
         with open(fname, 'r') as ff:
-            lines = [line.strip() for line in ff.readlines() if line.strip()]
+            lines = ff.readlines()
         
-        try:
-            n_atoms = int(lines[0])
-            atoms = AtomArray(n_atoms)
-            
-            for i, line in enumerate(lines[2:]):  # Skip header and comment line
+        xyz = []
+        n_atoms = int(lines[0])
+        for line in lines[2:]: 
+            try:
                 parts = line.split()
-                atoms['atom_name'][i] = parts[0]
-                atoms['x'][i] = float(parts[1])
-                atoms['y'][i] = float(parts[2])
-                atoms['z'][i] = float(parts[3])
-                
-        except Exception as e:
-            raise Exception(f"Error parsing XYZ file: {e}")
+                xyz.append({'atom_name': parts[0],
+                            'x': float(parts[1]),
+                            'y': float(parts[2]),
+                            'z': float(parts[3])})
+            except Exception as e:
+                raise Exception(f"Error parsing line: {line.strip()} - {e}")
         
-        if len(lines[2:]) != n_atoms:
-            raise ValueError(f"Expected {n_atoms} atoms but found {len(lines[2:])}")
-            
-        self.atoms = atoms
+        self.atoms = pd.DataFrame(xyz)
 
     def _read_psf(self, fname: str) -> None:
         """Read atomic data from PSF file"""
         with open(fname, 'r') as ff:
-            lines = [line for line in ff.readlines() if line.startswith('ATOM')]
+            lines = ff.readlines()
         
-        atoms = AtomArray(len(lines))
-        for i, line in enumerate(lines):
-            try:
-                parts = line.split()
-                atoms['atom_name'][i] = parts[2]
-                atoms['resname'][i] = parts[3]
-                atoms['resid'][i] = int(parts[4])
-                atoms['charge'][i] = float(parts[6])
-                atoms['mass'][i] = float(parts[7])
-                atoms['segment'][i] = parts[8]
-            except Exception as e:
-                raise Exception(f"Error parsing line: {line.strip()} - {e}")
+        psf = []
+        for line in lines[:]: 
+            if line.startswith('ATOM'):
+                try:
+                    parts = line.split()
+                    psf.append({'atom_name': parts[2],
+                                'resname': parts[3],
+                                'resid': int(parts[4]),
+                                'charge': float(parts[6]),
+                                'mass': float(parts[7]),
+                                'segment': parts[8]})
+                except Exception as e:
+                    raise Exception(f"Error parsing line: {line.strip()} - {e}")
         
-        self.atoms = atoms
+        self.atoms = pd.DataFrame(psf)
 
     def _read_crd(self, fname: str) -> None:
         """Read atomic data from CHARMM CRD file"""
@@ -158,39 +141,48 @@ class Molecule:
             n_atoms_line = lines[1].strip()
             is_expanded = "EXT" in n_atoms_line
             
-            # Count valid lines for pre-allocation
-            valid_lines = [l for l in lines[2:] if l.strip()]
-            atoms = AtomArray(len(valid_lines))
-            
-            current_idx = 0
-            for line in valid_lines:
+            crd = []
+            current_line = 2  # Start after header and atom count
+
+            while current_line < len(lines):
+                line = lines[current_line].strip()
+                if not line:  # Skip empty lines
+                    current_line += 1
+                    continue
+                    
                 try:
                     if is_expanded:
                         # Parse expanded format
-                        atoms['serial'][current_idx] = int(line[0:10])
-                        atoms['resname'][current_idx] = line[22:30].strip()
-                        atoms['atom_name'][current_idx] = line[32:40].strip()
-                        atoms['x'][current_idx] = float(line[40:60])
-                        atoms['y'][current_idx] = float(line[60:80])
-                        atoms['z'][current_idx] = float(line[80:100])
-                        atoms['segment'][current_idx] = line[102:110].strip()
-                        atoms['resid'][current_idx] = line[112:120].strip()
+                        crd.append({
+                            'serial': int(line[0:10]),
+                            'residue_number': int(line[10:20]),
+                            'resname': line[22:30].strip(),
+                            'atom_name': line[32:40].strip(),
+                            'x': float(line[40:60]),
+                            'y': float(line[60:80]),
+                            'z': float(line[80:100]),
+                            'segment': line[102:110].strip(),
+                            'resid': line[112:120].strip()
+                        })
                     else:
                         # Parse normal format
-                        atoms['serial'][current_idx] = int(line[0:5])
-                        atoms['resname'][current_idx] = line[11:15].strip()
-                        atoms['atom_name'][current_idx] = line[16:20].strip()
-                        atoms['x'][current_idx] = float(line[20:30])
-                        atoms['y'][current_idx] = float(line[30:40])
-                        atoms['z'][current_idx] = float(line[40:50])
-                        atoms['segment'][current_idx] = line[51:55].strip()
-                        atoms['resid'][current_idx] = line[56:60].strip()
+                        crd.append({
+                            'serial': int(line[0:5]),
+                            'residue_number': int(line[5:10]),
+                            'resname': line[11:15].strip(),
+                            'atom_name': line[16:20].strip(),
+                            'x': float(line[20:30]),
+                            'y': float(line[30:40]),
+                            'z': float(line[40:50]),
+                            'segment': line[51:55].strip(),
+                            'resid': line[56:60].strip()
+                        })
                 except Exception as e:
-                    raise ValueError(f"Error parsing line {current_idx + 1}: {line}\n{str(e)}")
+                    raise ValueError(f"Error parsing line {current_line + 1}: {line}\n{str(e)}")
                 
-                current_idx += 1
+                current_line += 1
 
-            self.atoms = atoms
+            self.atoms = pd.DataFrame(crd).set_index('serial')
             
         except Exception as e:
             raise Exception(f"Error reading CRD file {fname}: {e}")
@@ -305,11 +297,15 @@ class Molecule:
 
     def get_coordinates(self) -> np.ndarray:
         """Return atomic coordinates as numpy array"""
-        return self.atoms.get_coordinates()
+        return self.atoms[['x', 'y', 'z']].values
 
     def set_coordinates(self, coords: np.ndarray) -> None:
         """Set atomic coordinates from numpy array"""
-        self.atoms.set_coordinates(coords)
+        if coords.shape[1] != 3:
+            raise ValueError("Coordinates must be Nx3 array")
+        self.atoms['x'] = coords[:, 0]
+        self.atoms['y'] = coords[:, 1]
+        self.atoms['z'] = coords[:, 2]
 
     def center_of_mass(self) -> np.ndarray:
         """Calculate center of mass"""
@@ -327,75 +323,24 @@ class Molecule:
         """Extract atom element from atom names"""
         raise NotImplementedError
 
-    def compute_pairwise_distances(self, kind: str = 'atoms', inverse: bool = False, 
-                                 unit: bool = False, normalize: bool = False, 
-                                 exp: Optional[float] = None) -> np.ndarray:
-        """Compute pairwise distances between atoms or residues.
+    def compute_bonds(self, element_col: str = 'element', tolerance: float = 1.3) -> List[tuple]:
+        """Compute molecular bonds based on atomic distances and covalent radii.
         
         Args:
-            kind: Type of distance calculation ('atoms' or 'residues')
-            inverse: Compute inverse of distances (default: False)
-            unit: Normalize columns to unit vectors (default: False)
-            normalize: Mean normalize matrix (default: False)
-            exp: Exponent for inverse distance calculation (default: None)
+            element_col: Column name containing element symbols
+            tolerance: Factor to multiply sum of covalent radii by
         
         Returns:
-            numpy array of pairwise distances
-            
-        Raises:
-            ValueError: If kind is not supported
-            NotImplementedError: For residue distances
+            List of tuples containing atom indices of bonded atoms
         """
-        if kind not in ['atoms', 'residues']:
-            raise ValueError("kind must be either 'atoms' or 'residues'")
-            
-        if kind == 'residues':
-            raise NotImplementedError("Residue-level distances not yet implemented")
-            
-        # Get coordinates and compute distances
-        coords = self.get_coordinates()
-        distances = pd.DataFrame(squareform(pdist(coords)))
-        
-        # Compute inverse if requested
-        if inverse:
-            with np.errstate(divide='ignore'):
-                distances = 1 / distances
-            distances.replace([np.inf], 0, inplace=True)
-            if exp is not None:
-                distances = distances ** exp
-        
-        # Normalize to unit vectors if requested
-        if unit:
-            distances = distances / np.sqrt((distances**2).sum())
-            
-        # Mean normalize if requested
-        if normalize:
-            distances = (distances - distances.mean()) / distances.std()
-            
-        return distances.values
-
-    # Update compute_bonds to use new parameters
-    def compute_bonds(self, element_col: str = 'element', tolerance: float = 1.3) -> List[tuple]:
-        """Compute molecular bonds based on atomic distances and covalent radii."""
-        # Parameter validation
-        if not isinstance(element_col, str):
-            raise TypeError("element_col must be a string")
-        if not isinstance(tolerance, (int, float)):
-            raise TypeError("tolerance must be a number")
-        if tolerance <= 0:
-            raise ValueError("tolerance must be positive")
-        if element_col not in self.atoms.columns:
-            if element_col == 'element':
-                self._get_element()  # Try to extract elements from atom names
-            else:
-                raise ValueError(f"Column {element_col} not found in atoms DataFrame")
+        # if no elemnt is avialable extract element froma atom_name
 
         coords = self.get_coordinates()
         elements = self.atoms[element_col].values
         n_atoms = len(coords)
         
-        # Use new pairwise distance function
-        distances = self.compute_pairwise_distances(kind='atoms')
+        # Compute all pairwise distances
+        distances = squareform(pdist(coords))
         
         # Get matrix of covalent radii sums
         radii_matrix = np.zeros((n_atoms, n_atoms))
@@ -467,7 +412,103 @@ class Molecule:
         self.angles = angles
         return angles
     
+    def to_pytorch_geometric(self, add_edge_features: bool = True) -> Data:
+        """Convert molecular structure to PyTorch Geometric Data object.
+        
+        Args:
+            add_edge_features: Whether to add bond distance features to edges
+            
+        Returns:
+            PyTorch Geometric Data object with:
+                - x: Node features (atomic properties)
+                - edge_index: Bond connectivity
+                - edge_attr: Bond features (distances, if requested)
+                - pos: 3D coordinates
+        """
+        # Ensure bonds are computed
+        if not self.bonds:
+            self.compute_bonds()
+            
+        # Create node features
+        atom_features = []
+        for _, atom in enumerate(self.atoms):
+            features = [
+                float(atom['mass']) if 'mass' in atom.dtype.names else 0.0,
+                float(atom['charge']) if 'charge' in atom.dtype.names else 0.0,
+                self._COVALENT_RADII.get(atom['element'], 1.0) if 'element' in atom.dtype.names else 1.0,
+            ]
+            atom_features.append(features)
+        
+        x = torch.tensor(atom_features, dtype=torch.float)
+        
+        # Create edge index from bonds (0-based indexing)
+        edge_index = torch.tensor([[b[0]-1, b[1]-1] for b in self.bonds], dtype=torch.long).t()
+        
+        # Get positions
+        pos = torch.tensor(self.get_coordinates(), dtype=torch.float)
+        
+        # Compute edge features if requested
+        edge_attr = None
+        if add_edge_features and edge_index.shape[1] > 0:
+            # Compute bond distances
+            src, dst = edge_index
+            edge_attr = torch.norm(pos[dst] - pos[src], dim=1, keepdim=True)
+            
+            # Add angle information if available
+            if self.angles:
+                angle_features = []
+                bond_pairs = {(min(b1, b2), max(b1, b2)) for b1, b2 in self.bonds}
+                for b1, b2 in zip(src, dst):
+                    # Find angles involving this bond
+                    bond_angles = [
+                        angle[3] for angle in self.angles 
+                        if (min(angle[0]-1, angle[2]-1), max(angle[0]-1, angle[2]-1)) == (min(b1, b2), max(b1, b2))
+                    ]
+                    avg_angle = torch.tensor([sum(bond_angles) / len(bond_angles)]) if bond_angles else torch.tensor([120.0])
+                    angle_features.append(avg_angle)
+                
+                angle_features = torch.stack(angle_features)
+                edge_attr = torch.cat([edge_attr, angle_features], dim=1)
+        
+        # Create data object
+        data = Data(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            pos=pos,
+            num_nodes=len(self.atoms)
+        )
+        
+        # Add periodic boundary conditions if available
+        if self.box is not None:
+            data.box = torch.tensor(self.box, dtype=torch.float)
+        
+        return data
+
+    def from_pytorch_geometric(self, data: Data) -> None:
+        """Initialize molecule from PyTorch Geometric Data object.
+        
+        Args:
+            data: PyTorch Geometric Data object
+        """
+        num_atoms = data.num_nodes
+        self.atoms = AtomArray(num_atoms)
+        
+        # Set coordinates
+        self.atoms.set_coordinates(data.pos.numpy())
+        
+        # Set bonds (convert to 1-based indexing)
+        self.bonds = [(int(src)+1, int(dst)+1) 
+                     for src, dst in data.edge_index.t().numpy()]
+        
+        # Set atomic properties from node features if they match expected format
+        if data.x is not None and data.x.shape[1] >= 3:
+            self.atoms['mass'] = data.x[:, 0].numpy()
+            self.atoms['charge'] = data.x[:, 1].numpy()
+        
+        # Set box if available
+        if hasattr(data, 'box'):
+            self.box = data.box.numpy()
+
     def __repr__(self) -> str:
         return f"Molecule(name='{self.name}', n_atoms={len(self.atoms)})"
-
-
