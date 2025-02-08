@@ -1,13 +1,13 @@
 # Molecular Representations
 
-Different ways for representing structural information of molecules.
+A Python library for representing and manipulating molecular structures.
 
-## Requirements
+## Features
 
-## How to use
+*   Reading and writing various molecular file formats (PDB, XYZ, PSF, CRD).
+*   Efficient storage of atomic data using NumPy structured arrays.
+*   Calculation of bonds, angles, and pairwise distances.
+*   Utilities for coordinate manipulation and analysis.
 
-## Pairwise distance matrix
+## Usage
 
-- only coordinates (euclidean distance)
-- sensitive to permutation of rows and columns
-- use: could be used for implicit representation of molecular structures or as basis for computing more advanced representations like the coulomb matrix
