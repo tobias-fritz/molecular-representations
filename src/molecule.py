@@ -59,25 +59,46 @@ class Molecule:
     def _read_pdb(self, fname: str) -> None:
         """Read atomic data from PDB file"""
         with open(fname, 'r') as ff:
+            # Collect both ATOM and HETATM records
             lines = [line for line in ff.readlines() 
-                    if line.startswith('ATOM') or line.startswith('HETATM')]
+                    if line.startswith(('ATOM', 'HETATM'))]
         
         # Pre-allocate array
         atoms = AtomArray(len(lines))
         
         for i, line in enumerate(lines):
             try:
-                atoms['record_name'][i] = line[:6].strip()
-                atoms['atom_name'][i] = line[13:17].strip()
-                atoms['resname'][i] = line[18:21].strip()
-                atoms['chain'][i] = line[22].strip()
-                atoms['resid'][i] = int(line[23:26])
-                atoms['x'][i] = float(line[31:39])
-                atoms['y'][i] = float(line[39:47])
-                atoms['z'][i] = float(line[47:55])
-                atoms['occupancy'][i] = float(line[55:61])
-                atoms['beta'][i] = float(line[61:67])
-                atoms['segment'][i] = line[72:77].strip()
+                # Store record type (ATOM/HETATM)
+                record_type = line[:6].strip()
+                atoms['record_name'][i] = record_type
+                atoms['atom_name'][i] = line[12:16].strip()  # Adjusted to properly handle 4-char names
+                atoms['resname'][i] = line[17:20].strip()
+                atoms['chain'][i] = line[21:22].strip()
+                atoms['resid'][i] = int(line[22:26])  # Include insertion code position
+                
+                # Parse coordinates with safety checks
+                try:
+                    atoms['x'][i] = float(line[30:38])
+                    atoms['y'][i] = float(line[38:46])
+                    atoms['z'][i] = float(line[46:54])
+                except ValueError:
+                    raise ValueError(f"Invalid coordinates in line: {line.strip()}")
+                
+                # Optional fields - use 0.0 as default if empty/invalid
+                try:
+                    atoms['occupancy'][i] = float(line[54:60])
+                except (ValueError, IndexError):
+                    atoms['occupancy'][i] = 0.0
+                    
+                try:
+                    atoms['beta'][i] = float(line[60:66])
+                except (ValueError, IndexError):
+                    atoms['beta'][i] = 0.0
+                    
+                # Segment ID (if present)
+                if len(line) >= 77:
+                    atoms['segment'][i] = line[72:76].strip()
+                
             except Exception as e:
                 raise Exception(f"Error parsing line: {line.strip()} - {e}")
         
