@@ -8,6 +8,7 @@ import torch
 from torch_geometric.data import Data
 import networkx as nx
 from typing import Optional, Dict, Any, Tuple
+from .atom_array import AtomArray
 
 @dataclass
 class Molecule:
@@ -68,29 +69,50 @@ class Molecule:
     def _read_pdb(self, fname: str) -> None:
         """Read atomic data from PDB file"""
         with open(fname, 'r') as ff:
-            lines = ff.readlines()
+            # Collect both ATOM and HETATM records
+            lines = [line for line in ff.readlines() 
+                    if line.startswith(('ATOM', 'HETATM'))]
         
-        pdb = []
-        for line in lines[:]: 
-            if line.startswith('ATOM') or line.startswith('HETATM'):
+        # Pre-allocate atom array
+        atoms = AtomArray(len(lines))
+        
+        for i, line in enumerate(lines):
+            try:
+                # Parse fields directly into AtomArray
+                atoms['record_name'][i] = line[:6].strip()
+                atoms['atom_name'][i] = line[12:16].strip()  # Corrected indices for 4-char names
+                atoms['resname'][i] = line[17:20].strip()
+                atoms['chain'][i] = line[21:22].strip()
+                atoms['resid'][i] = int(line[22:26])
+                
+                # Coordinates need careful parsing
                 try:
-                    pdb.append({'record_name': line[:6].strip(),
-                                'serial': int(line[7:12]),
-                                'atom_name': line[13:17].strip(),
-                                'resname': line[18:21].strip(),
-                                'chain': line[22].strip(),
-                                'resid': line[23:26].strip(),
-                                'x': float(line[31:39].strip()),
-                                'y': float(line[39:47].strip()),
-                                'z': float(line[47:55].strip()),
-                                'occupancy': line[55:61].strip(),
-                                'beta': line[61:67].strip(),
-                                'segment': line[72:77].strip()})
-                except Exception as e:
-                    raise Exception(f"Error parsing line: {line.strip()} - {e}")
+                    atoms['x'][i] = float(line[30:38].strip())
+                    atoms['y'][i] = float(line[38:46].strip())
+                    atoms['z'][i] = float(line[46:54].strip())
+                except ValueError:
+                    raise ValueError(f"Invalid coordinates in line: {line.strip()}")
+                
+                # Optional fields with default values
+                try:
+                    atoms['occupancy'][i] = float(line[54:60].strip() or "0.0")
+                except (ValueError, IndexError):
+                    atoms['occupancy'][i] = 0.0
+                    
+                try:
+                    atoms['beta'][i] = float(line[60:66].strip() or "0.0")
+                except (ValueError, IndexError):
+                    atoms['beta'][i] = 0.0
+                    
+                # Segment ID (if present)
+                if len(line) >= 77:
+                    atoms['segment'][i] = line[72:76].strip()
+                
+            except Exception as e:
+                raise Exception(f"Error parsing line {i+1}: {line.strip()} - {e}")
         
-        self.atoms = pd.DataFrame(pdb).set_index('serial')
-  
+        self.atoms = atoms
+
     def _read_xyz(self, fname: str) -> None:
         """Read atomic data from XYZ file"""
         with open(fname, 'r') as ff:

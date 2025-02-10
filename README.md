@@ -1,5 +1,5 @@
 # Molecular Representations
-
+![Tests](https://github.com/tobias-fritz/molecular-representations/actions/workflows/tests.yml/badge.svg)
 A Python library for representing and manipulating molecular structures.
 
 ## Features

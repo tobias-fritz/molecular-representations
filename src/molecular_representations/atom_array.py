@@ -56,9 +56,23 @@ class AtomArray:
         return np.column_stack((self._data['x'], self._data['y'], self._data['z']))
 
     def set_coordinates(self, coords: np.ndarray) -> None:
-        """Set coordinates from Nx3 array."""
+        """Set coordinates from Nx3 array.
+        
+        Args:
+            coords: numpy array of shape (N, 3) containing xyz coordinates
+            
+        Raises:
+            ValueError: If coords shape doesn't match (N_atoms, 3)
+        """
+        if not isinstance(coords, np.ndarray):
+            raise ValueError("Coordinates must be a numpy array")
+            
+        if len(coords.shape) != 2 or coords.shape[1] != 3:
+            raise ValueError(f"Coordinates must be Nx3 array, got shape {coords.shape}")
+            
         if coords.shape[0] != self._size:
-            raise ValueError("Coordinates array must match number of atoms")
+            raise ValueError(f"Number of coordinates ({coords.shape[0]}) must match number of atoms ({self._size})")
+            
         self._data['x'] = coords[:, 0]
         self._data['y'] = coords[:, 1]
         self._data['z'] = coords[:, 2]
