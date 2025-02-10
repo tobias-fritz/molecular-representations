@@ -336,15 +336,11 @@ class Molecule:
 
     def get_coordinates(self) -> np.ndarray:
         """Return atomic coordinates as numpy array"""
-        return self.atoms[['x', 'y', 'z']].values
+        return self.atoms.get_coordinates()
 
     def set_coordinates(self, coords: np.ndarray) -> None:
         """Set atomic coordinates from numpy array"""
-        if coords.shape[1] != 3:
-            raise ValueError("Coordinates must be Nx3 array")
-        self.atoms['x'] = coords[:, 0]
-        self.atoms['y'] = coords[:, 1]
-        self.atoms['z'] = coords[:, 2]
+        self.atoms.set_coordinates(coords)
 
     def center_of_mass(self) -> np.ndarray:
         """Calculate center of mass"""
