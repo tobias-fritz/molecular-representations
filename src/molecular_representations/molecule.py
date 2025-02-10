@@ -206,9 +206,6 @@ class Molecule:
             for idx, atom in self.atoms.iterrows():
                 ff.write(f"ATOM  {idx:5} {atom['atom_name']:4} {atom['resname']:3} {atom['chain']:1} {atom['resid']:4}    {atom['x']:8.3f}{atom['y']:8.3f}{atom['z']:8.3f}{atom['occupancy']:6.2f}{atom['beta']:6.2f}          {atom['segment']:4}\n")
     
-    def _write_gro(self, fname: str) -> None:
-        """Write atomic data to GRO file"""
-        raise NotImplementedError
     
     def _write_xyz(self, fname: str) -> None:
         """Write atomic data to XYZ file"""

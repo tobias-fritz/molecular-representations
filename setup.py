@@ -1,7 +1,7 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="molecular_representations",
-    packages=["molecular_representations"],
+    packages=find_packages(where="src"),
     package_dir={"": "src"}
 )
