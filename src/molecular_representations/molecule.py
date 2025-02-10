@@ -47,24 +47,164 @@ class Molecule:
     }
 
     def __init__(self, name: str = "Unnamed", cord: Optional[str] = None, top: Optional[str] = None) -> None:
+        """Initialize molecule with optional topology and coordinate files."""
         self.name = name
-        if cord:
-            self.read_file(cord)
+        self._coordinates_loaded = False
+        self.atoms = AtomArray(0)  # Initialize empty atom array
+        
+        # Read topology first if provided
         if top:
             self.read_file(top)
+            
+        # Then read coordinates if provided
+        if cord:
+            self.read_file(cord)
+
+    def _merge_coordinates(self, new_atoms: AtomArray) -> None:
+        """Merge coordinates from new atoms into existing structure."""
+        if len(new_atoms) != len(self.atoms):
+            raise Exception(f"Atom count mismatch between topology ({len(self.atoms)}) and coordinates ({len(new_atoms)})")
+            
+        # Store topology information
+        old_atoms = self.atoms.copy()
+        
+        # Update atoms with new coordinates
+        self.atoms = new_atoms
+        
+        # Copy back topology fields
+        for field in ['charge', 'mass', 'atom_type', 'resname', 'resid', 'segment']:
+            if field in old_atoms.DTYPE.names:
+                self.atoms[field] = old_atoms[field]
+                
+        self._coordinates_loaded = True
+
+    def _read_crd(self, fname: str) -> None:
+        """Read atomic data from CHARMM CRD file"""
+        try:
+            with open(fname, 'r') as ff:
+                lines = [line.strip() for line in ff.readlines() if line.strip()]
+
+            if len(lines) < 2:
+                raise Exception("Invalid CRD file: insufficient lines")
+
+            # Get atom count from second line
+            try:
+                n_atoms = int(lines[1].split()[0])
+            except (ValueError, IndexError):
+                raise Exception("Invalid atom count in CRD file")
+
+            # Create new atom array for coordinates
+            atoms = AtomArray(n_atoms)
+            
+            # Parse atom lines starting from line 2
+            for i, line in enumerate(lines[2:n_atoms+2]):
+                try:
+                    parts = line.split()
+                    if len(parts) < 7:
+                        raise ValueError(f"Insufficient fields in line: {line}")
+                    
+                    # Parse coordinates from fixed positions
+                    x = float(parts[4])
+                    y = float(parts[5])
+                    z = float(parts[6])
+                    
+                    atoms['x'][i] = x
+                    atoms['y'][i] = y
+                    atoms['z'][i] = z
+                    
+                    # Store other fields
+                    atoms['atom_name'][i] = parts[3]
+                    atoms['resname'][i] = parts[2]
+                    atoms['resid'][i] = int(parts[1])
+                    atoms['segment'][i] = parts[7] if len(parts) > 7 else ""
+                    
+                except (ValueError, IndexError) as e:
+                    raise Exception(f"Error parsing line {i+3}: {line} - {str(e)}")
+
+            # Set coordinates flag
+            if hasattr(self, 'atoms') and len(self.atoms) > 0:
+                self._merge_coordinates(atoms)
+            else:
+                self.atoms = atoms
+                self._coordinates_loaded = True
+
+        except Exception as e:
+            raise Exception(f"Error reading CRD file {fname}: {str(e)}")
 
     def read_file(self, fname: str) -> None:
-        """Read atomic data from file"""
-        if fname.endswith('.pdb'):
-            self._read_pdb(fname)
-        elif fname.endswith('.xyz'):
-            self._read_xyz(fname)
-        elif fname.endswith('.psf'):
-            self._read_psf(fname)
-        elif fname.endswith('.crd'):
-            self._read_crd(fname)
-        else:
-            raise ValueError(f"Unsupported file format: {fname}")
+        """Read atomic data from file."""
+        # Store existing state
+        existing_atoms = None
+        had_coordinates = False
+        
+        if hasattr(self, 'atoms') and len(self.atoms) > 0:
+            # Store current state
+            existing_atoms = self.atoms.copy()
+            had_coordinates = self._coordinates_loaded
+            existing_coords = self.get_coordinates() if had_coordinates else None
+        
+        try:
+            # Read new file
+            if fname.endswith(('.pdb', '.xyz', '.crd')):
+                # Reading coordinate file
+                old_atoms = self.atoms if hasattr(self, 'atoms') else None
+                
+                # Read the file
+                if fname.endswith('.pdb'):
+                    self._read_pdb(fname)
+                elif fname.endswith('.xyz'):
+                    self._read_xyz(fname)
+                else:  # CRD file
+                    self._read_crd(fname)
+                
+                # If we had previous atoms, verify and merge
+                if old_atoms is not None and len(old_atoms) > 0:
+                    if len(old_atoms) != len(self.atoms):
+                        raise Exception(f"Atom count mismatch between topology ({len(old_atoms)}) and coordinates ({len(self.atoms)})")
+                    new_atoms = self.atoms.copy()
+                    self.atoms = old_atoms
+                    self._merge_coordinates(new_atoms)
+                
+            elif fname.endswith('.psf'):
+                # Reading topology file
+                old_coords = None
+                if had_coordinates:
+                    old_coords = existing_coords
+                
+                self._read_psf(fname)
+                
+                if old_coords is not None:
+                    self.atoms.set_coordinates(old_coords)
+                    self._coordinates_loaded = True
+                    
+            else:
+                raise ValueError(f"Unsupported file format: {fname}")
+                
+        except Exception as e:
+            # Restore previous state on error
+            if existing_atoms is not None:
+                self.atoms = existing_atoms
+                self._coordinates_loaded = had_coordinates
+            raise e
+
+    def _merge_topology(self, old_atoms: AtomArray) -> None:
+        """Merge topology information from old atoms."""
+        if len(old_atoms) != len(self.atoms):
+            raise Exception(f"Atom count mismatch: old={len(old_atoms)}, new={len(self.atoms)}")
+            
+        # Store current coordinates if they exist
+        coords = None
+        if self._coordinates_loaded:
+            coords = self.atoms.get_coordinates()
+            
+        # Copy topology fields
+        for field in ['charge', 'mass', 'atom_type']:
+            if field in old_atoms.DTYPE.names:
+                self.atoms[field] = old_atoms[field]
+                
+        # Restore coordinates if they existed
+        if coords is not None:
+            self.atoms.set_coordinates(coords)
 
     def _read_pdb(self, fname: str) -> None:
         """Read atomic data from PDB file"""
@@ -115,6 +255,7 @@ class Molecule:
                 raise Exception(f"Error parsing line {i+1}: {line.strip()} - {e}")
         
         self.atoms = atoms
+        self._coordinates_loaded = True  # Set flag when reading coordinate file
 
     def _read_xyz(self, fname: str) -> None:
         """Read atomic data from XYZ file"""
@@ -151,84 +292,77 @@ class Molecule:
                 raise Exception(f"Error parsing line {i+3}: {line} - {str(e)}")
         
         self.atoms = atoms
+        self._coordinates_loaded = True  # Set flag when reading coordinate file
 
     def _read_psf(self, fname: str) -> None:
         """Read atomic data from PSF file"""
-        with open(fname, 'r') as ff:
-            lines = ff.readlines()
-        
-        psf = []
-        for line in lines[:]: 
-            if line.startswith('ATOM'):
-                try:
-                    parts = line.split()
-                    psf.append({'atom_name': parts[2],
-                                'resname': parts[3],
-                                'resid': int(parts[4]),
-                                'charge': float(parts[6]),
-                                'mass': float(parts[7]),
-                                'segment': parts[8]})
-                except Exception as e:
-                    raise Exception(f"Error parsing line: {line.strip()} - {e}")
-        
-        self.atoms = pd.DataFrame(psf)
-
-    def _read_crd(self, fname: str) -> None:
-        """Read atomic data from CHARMM CRD file"""
         try:
             with open(fname, 'r') as ff:
-                lines = ff.readlines()
+                # Keep all lines but strip whitespace
+                lines = [line.strip() for line in ff.readlines()]
 
-            # Skip title line
-            n_atoms_line = lines[1].strip()
-            is_expanded = "EXT" in n_atoms_line
+            if not lines or 'PSF' not in lines[0]:
+                raise Exception("Invalid PSF file format: missing PSF header")
+
+            # Find the NATOM section and count
+            natom_idx = None
+            n_atoms = 0
+            for i, line in enumerate(lines):
+                if '!NATOM' in line:
+                    try:
+                        n_atoms = int(line.split('!')[0].strip())
+                        natom_idx = i
+                        break
+                    except (ValueError, IndexError):
+                        raise Exception("Invalid NATOM section in PSF file")
             
-            crd = []
-            current_line = 2  # Start after header and atom count
+            if natom_idx is None:
+                raise Exception("No NATOM section found in PSF file")
 
-            while current_line < len(lines):
-                line = lines[current_line].strip()
-                if not line:  # Skip empty lines
-                    current_line += 1
-                    continue
-                    
+            # Get atom lines, skip empty lines and comments
+            atom_lines = []
+            line_idx = natom_idx + 1
+            atoms_found = 0
+            
+            while atoms_found < n_atoms and line_idx < len(lines):
+                line = lines[line_idx].strip()
+                if line and not line.startswith('!'):  # Skip comments and empty lines
+                    atom_lines.append(line)
+                    atoms_found += 1
+                line_idx += 1
+            
+            if len(atom_lines) != n_atoms:
+                raise Exception(f"Expected {n_atoms} atoms but found {len(atom_lines)}")
+            
+            # Create atom array
+            atoms = AtomArray(n_atoms)
+            
+            # Parse atom lines
+            for i, line in enumerate(atom_lines):
                 try:
-                    if is_expanded:
-                        # Parse expanded format
-                        crd.append({
-                            'serial': int(line[0:10]),
-                            'residue_number': int(line[10:20]),
-                            'resname': line[22:30].strip(),
-                            'atom_name': line[32:40].strip(),
-                            'x': float(line[40:60]),
-                            'y': float(line[60:80]),
-                            'z': float(line[80:100]),
-                            'segment': line[102:110].strip(),
-                            'resid': line[112:120].strip()
-                        })
-                    else:
-                        # Parse normal format
-                        crd.append({
-                            'serial': int(line[0:5]),
-                            'residue_number': int(line[5:10]),
-                            'resname': line[11:15].strip(),
-                            'atom_name': line[16:20].strip(),
-                            'x': float(line[20:30]),
-                            'y': float(line[30:40]),
-                            'z': float(line[40:50]),
-                            'segment': line[51:55].strip(),
-                            'resid': line[56:60].strip()
-                        })
-                except Exception as e:
-                    raise ValueError(f"Error parsing line {current_line + 1}: {line}\n{str(e)}")
-                
-                current_line += 1
-
-            self.atoms = pd.DataFrame(crd).set_index('serial')
+                    # Handle fixed-width format with proper splitting
+                    parts = line.split()
+                    if len(parts) < 8:  # Need at least 8 fields
+                        raise ValueError(f"Missing required fields, got {len(parts)} fields")
+                    
+                    # Fix: Correct field indexing
+                    serial = int(parts[0])         # Atom serial number
+                    atoms['segment'][i] = parts[1]        # Segment name
+                    atoms['resid'][i] = int(parts[2])     # Residue ID
+                    atoms['resname'][i] = parts[3]        # Residue name
+                    atoms['atom_name'][i] = parts[4]      # Atom name
+                    atoms['atom_type'][i] = parts[5]      # Atom type
+                    atoms['charge'][i] = float(parts[6])  # Charge
+                    atoms['mass'][i] = float(parts[7])    # Mass
+                    
+                except (ValueError, IndexError) as e:
+                    raise Exception(f"Error parsing line {i+1}: {line} - {str(e)}")
+            
+            self.atoms = atoms
             
         except Exception as e:
-            raise Exception(f"Error reading CRD file {fname}: {e}")
-    
+            raise Exception(f"Error reading PSF file: {str(e)}")
+
     def write_file(self, fname: str) -> None:
         """Write atomic data to file"""
         if fname.endswith('.pdb'):
@@ -260,14 +394,6 @@ class Molecule:
         """Write atomic data to PSF file"""
         with open(fname, 'w') as ff:
             ff.write(f"PSF\n\n")
-            ff.write(f"{len(self.atoms)} !NATOM\n")
-            for idx, atom in self.atoms.iterrows():
-                ff.write(f"{idx:8} {atom['atom_name']:4} {atom['resname']:4} {atom['resid']:4} {atom['charge']:8.6f} {atom['mass']:8.4f} {atom['segment']:4}\n")
-            ff.write("\n")
-            ff.write(f"{len(self.bonds)} !NBOND: bonds\n")
-            for bond in self.bonds:
-                ff.write(f"{bond[0]:8} {bond[1]:8}\n")
-            ff.write("\n")
             ff.write(f"{len(self.angles)} !NTHETA: angles\n")
             for angle in self.angles:
                 ff.write(f"{angle[0]:8} {angle[1]:8} {angle[2]:8}\n")
@@ -335,12 +461,15 @@ class Molecule:
                            f"{atom['segment']:<8s}  {atom['resid']:<8s}{0.0:20.10f}\n")
 
     def get_coordinates(self) -> np.ndarray:
-        """Return atomic coordinates as numpy array"""
+        """Return atomic coordinates as numpy array."""
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
         return self.atoms.get_coordinates()
 
     def set_coordinates(self, coords: np.ndarray) -> None:
-        """Set atomic coordinates from numpy array"""
+        """Set atomic coordinates from numpy array."""
         self.atoms.set_coordinates(coords)
+        self._coordinates_loaded = True
 
     def center_of_mass(self) -> np.ndarray:
         """Calculate center of mass"""

@@ -77,6 +77,21 @@ class AtomArray:
         self._data['y'] = coords[:, 1]
         self._data['z'] = coords[:, 2]
 
+    def copy(self) -> 'AtomArray':
+        """Create a deep copy of the atom array."""
+        new_array = AtomArray(self._size)
+        for field in self.DTYPE.names:
+            new_array[field] = self._data[field].copy()
+        return new_array
+        
+    def __copy__(self) -> 'AtomArray':
+        """Support for copy.copy()."""
+        return self.copy()
+        
+    def __deepcopy__(self, memo) -> 'AtomArray':
+        """Support for copy.deepcopy()."""
+        return self.copy()
+
     @classmethod
     def from_dataframe(cls, df) -> 'AtomArray':
         """Create AtomArray from pandas DataFrame."""
