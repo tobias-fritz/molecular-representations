@@ -27,7 +27,7 @@ class Molecule:
     bonds: List[tuple] = field(default_factory=list)
     angles: List[tuple] = field(default_factory=list)
     dihedrals: List[tuple] = field(default_factory=list)
-    impropers: List[tuple] = field(default_factory.list)
+    impropers: List[tuple] = field(default_factory=list)  # Fix: Changed default_factory.list to default_factory=list
     
     # Additional properties
     box: Optional[np.ndarray] = None
