@@ -32,6 +32,36 @@ END
     return pdb_file
 
 @pytest.fixture
+def tmp_psf_file(tmp_path):
+    """Create a temporary PSF file for testing."""
+    content = """PSF
+
+       1 !NTITLE
+ REMARKS PSF CHEM test file
+
+       5 !NATOM
+         1 PROT 1    ALA  N    NH3   -0.30000       14.0070           0
+         2 PROT 1    ALA  CA   CT1    0.21000       12.0110           0
+         3 PROT 1    ALA  CB   CT3   -0.27000       12.0110           0
+         4 PROT 1    ALA  C    C      0.51000       12.0110           0
+         5 PROT 1    ALA  O    O     -0.51000       15.9990           0
+
+       4 !NBOND: bonds
+         1         2         2         3         2         4         4         5
+
+       6 !NTHETA: angles
+         1     2     3     1     2     4     3     2     4
+         2     4     5
+
+       2 !NPHI: dihedrals
+         1     2     4     5     3     2     4     5
+
+END"""
+    psf_file = tmp_path / "test.psf"
+    psf_file.write_text(content)
+    return psf_file
+
+@pytest.fixture
 def molecule():
     """Create a clean molecule instance."""
     return Molecule(name="test")
@@ -184,5 +214,81 @@ END"""
         assert len(molecule.atoms) == 1
         assert molecule.atoms[0]['occupancy'] == 0.0
         assert molecule.atoms[0]['beta'] == 0.0
+
+class TestPSFReader:
+    def test_read_psf_basic(self, molecule, tmp_psf_file):
+        """Test basic PSF file reading."""
+        molecule.read_file(str(tmp_psf_file))
+        
+        # Check number of atoms
+        assert len(molecule.atoms) == 5
+        
+        # Check atom properties
+        assert list(molecule.atoms['atom_name']) == ['N', 'CA', 'CB', 'C', 'O']
+        assert list(molecule.atoms['resname']) == ['ALA'] * 5
+        assert list(molecule.atoms['resid']) == [1] * 5
+        assert list(molecule.atoms['segment']) == ['PROT'] * 5
+        
+        # Check charges
+        expected_charges = [-0.30, 0.21, -0.27, 0.51, -0.51]
+        assert np.allclose(molecule.atoms['charge'], expected_charges)
+        
+        # Check masses
+        expected_masses = [14.007, 12.011, 12.011, 12.011, 15.999]
+        assert np.allclose(molecule.atoms['mass'], expected_masses)
+
+    def test_read_psf_invalid_format(self, molecule, tmp_path):
+        """Test reading invalid PSF file."""
+        invalid_file = tmp_path / "invalid.psf"
+        invalid_file.write_text("not a valid psf file")
+        
+        with pytest.raises(Exception):
+            molecule.read_file(str(invalid_file))
+
+    def test_read_psf_missing_fields(self, molecule, tmp_path):
+        """Test reading PSF with missing fields."""
+        content = """PSF
+       1 !NATOM
+         1 PROT 1    ALA  N    NH3
+END"""
+        missing_file = tmp_path / "missing.psf"
+        missing_file.write_text(content)
+        
+        with pytest.raises(Exception):
+            molecule.read_file(str(missing_file))
+
+    def test_read_psf_invalid_numbers(self, molecule, tmp_path):
+        """Test reading PSF with invalid numeric values."""
+        content = """PSF
+       1 !NATOM
+         1 PROT 1    ALA  N    NH3   xxx           14.0070           0
+END"""
+        invalid_file = tmp_path / "invalid_numbers.psf"
+        invalid_file.write_text(content)
+        
+        with pytest.raises(Exception):
+            molecule.read_file(str(invalid_file))
+
+    def test_read_psf_empty(self, molecule, tmp_path):
+        """Test reading empty PSF file."""
+        empty_file = tmp_path / "empty.psf"
+        empty_file.write_text("")
+        
+        with pytest.raises(Exception):
+            molecule.read_file(str(empty_file))
+
+    def test_read_psf_with_comments(self, molecule, tmp_path):
+        """Test reading PSF with comment lines."""
+        content = """PSF
+! This is a comment
+       1 !NATOM
+! Another comment
+         1 PROT 1    ALA  N    NH3   -0.30000       14.0070           0
+END"""
+        comment_file = tmp_path / "comments.psf"
+        comment_file.write_text(content)
+        
+        molecule.read_file(str(comment_file))
+        assert len(molecule.atoms) == 1
 
 
