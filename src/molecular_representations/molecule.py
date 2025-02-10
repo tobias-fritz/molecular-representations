@@ -73,6 +73,9 @@ class Molecule:
             lines = [line for line in ff.readlines() 
                     if line.startswith(('ATOM', 'HETATM'))]
         
+        if not lines:
+            raise Exception("No valid ATOM or HETATM records found in PDB file")
+            
         # Pre-allocate atom array
         atoms = AtomArray(len(lines))
         
@@ -116,21 +119,38 @@ class Molecule:
     def _read_xyz(self, fname: str) -> None:
         """Read atomic data from XYZ file"""
         with open(fname, 'r') as ff:
-            lines = ff.readlines()
+            lines = [line.strip() for line in ff.readlines() if line.strip()]
+            
+        if len(lines) < 3:  # Need at least count, comment, and one atom
+            raise Exception("Invalid XYZ file format: insufficient lines")
+            
+        try:
+            n_atoms = int(lines[0])
+        except ValueError:
+            raise Exception("Invalid XYZ file format: first line must be number of atoms")
+            
+        atom_lines = lines[2:]  # Skip header and comment
+        if len(atom_lines) != n_atoms:
+            raise Exception(f"XYZ file format error: expected {n_atoms} atoms but found {len(atom_lines)}")
+            
+        # Pre-allocate atom array
+        atoms = AtomArray(n_atoms)
         
-        xyz = []
-        n_atoms = int(lines[0])
-        for line in lines[2:]: 
+        for i, line in enumerate(atom_lines):
             try:
                 parts = line.split()
-                xyz.append({'atom_name': parts[0],
-                            'x': float(parts[1]),
-                            'y': float(parts[2]),
-                            'z': float(parts[3])})
+                if len(parts) != 4:
+                    raise ValueError(f"Expected 4 values per line, got {len(parts)}")
+                    
+                atoms['atom_name'][i] = parts[0]
+                atoms['x'][i] = float(parts[1])
+                atoms['y'][i] = float(parts[2])
+                atoms['z'][i] = float(parts[3])
+                
             except Exception as e:
-                raise Exception(f"Error parsing line: {line.strip()} - {e}")
+                raise Exception(f"Error parsing line {i+3}: {line} - {str(e)}")
         
-        self.atoms = pd.DataFrame(xyz)
+        self.atoms = atoms
 
     def _read_psf(self, fname: str) -> None:
         """Read atomic data from PSF file"""
