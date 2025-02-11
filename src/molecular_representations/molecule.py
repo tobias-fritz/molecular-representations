@@ -9,6 +9,7 @@ from torch_geometric.data import Data
 import networkx as nx
 from typing import Optional, Dict, Any, Tuple
 from .atom_array import AtomArray
+import matplotlib.pyplot as plt
 
 @dataclass
 class Molecule:
@@ -46,11 +47,26 @@ class Molecule:
         'Pd': 1.39, 'Ag': 1.45, 'Cd': 1.44, 'Au': 1.36, 'Hg': 1.32
     }
 
+    # Add color mapping for elements
+    _ELEMENT_COLORS = {
+        'H': 'grey',
+        'C': 'k',
+        'N': 'b',
+        'O': 'r',
+        'F': 'green',
+        'P': 'orange',
+        'S': 'yellow',
+        'Cl': 'green',
+        'Br': 'brown',
+        'I': 'purple'
+    }
+
     def __init__(self, name: str = "Unnamed", cord: Optional[str] = None, top: Optional[str] = None) -> None:
         """Initialize molecule with optional topology and coordinate files."""
         self.name = name
         self._coordinates_loaded = False
         self.atoms = AtomArray(0)  # Initialize empty atom array
+        self.bonds = []  # Initialize empty bonds list
         
         # Read topology first if provided
         if top:
@@ -136,11 +152,13 @@ class Molecule:
         # Store existing state
         existing_atoms = None
         had_coordinates = False
+        had_elements = False
         
         if hasattr(self, 'atoms') and len(self.atoms) > 0:
             # Store current state
             existing_atoms = self.atoms.copy()
             had_coordinates = self._coordinates_loaded
+            had_elements = 'element' in self.atoms.DTYPE.names and any(self.atoms._data['element'])
             existing_coords = self.get_coordinates() if had_coordinates else None
         
         try:
@@ -157,6 +175,13 @@ class Molecule:
                 else:  # CRD file
                     self._read_crd(fname)
                 
+                # Try to extract elements from atom names if needed
+                if not had_elements and 'atom_name' in self.atoms.DTYPE.names:
+                    try:
+                        self._get_element()
+                    except Exception:
+                        pass  # Continue even if element detection fails
+                
                 # If we had previous atoms, verify and merge
                 if old_atoms is not None and len(old_atoms) > 0:
                     if len(old_atoms) != len(self.atoms):
@@ -172,6 +197,13 @@ class Molecule:
                     old_coords = existing_coords
                 
                 self._read_psf(fname)
+                
+                # Try to extract elements from atom names if needed
+                if not had_elements and 'atom_name' in self.atoms.DTYPE.names:
+                    try:
+                        self._get_element()
+                    except Exception:
+                        pass  # Continue even if element detection fails
                 
                 if old_coords is not None:
                     self.atoms.set_coordinates(old_coords)
@@ -381,8 +413,7 @@ class Molecule:
         with open(fname, 'w') as ff:
             for idx, atom in self.atoms.iterrows():
                 ff.write(f"ATOM  {idx:5} {atom['atom_name']:4} {atom['resname']:3} {atom['chain']:1} {atom['resid']:4}    {atom['x']:8.3f}{atom['y']:8.3f}{atom['z']:8.3f}{atom['occupancy']:6.2f}{atom['beta']:6.2f}          {atom['segment']:4}\n")
-    
-    
+      
     def _write_xyz(self, fname: str) -> None:
         """Write atomic data to XYZ file"""
         with open(fname, 'w') as ff:
@@ -473,50 +504,67 @@ class Molecule:
 
     def center_of_mass(self) -> np.ndarray:
         """Calculate center of mass"""
-        if 'mass' not in self.atoms:
-            return self.get_coordinates().mean(axis=0)
-        masses = self.atoms['mass'].values
-        coords = self.get_coordinates()
-        return np.average(coords, weights=masses, axis=0)
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
+            
+        coords = np.column_stack([
+            self.atoms._data['x'],
+            self.atoms._data['y'],
+            self.atoms._data['z']
+        ])
+        
+        if 'mass' in self.atoms.DTYPE.names and np.any(self.atoms._data['mass'] != 0):
+            masses = self.atoms._data['mass']
+            return np.average(coords, weights=masses, axis=0)
+        
+        return coords.mean(axis=0)
 
     def add_property(self, key: str, value: Any) -> None:
         """Add arbitrary property to the molecule"""
         self.properties[key] = value
 
     def _get_element(self) -> None:
-        """Extract atom element from atom names"""
-        raise NotImplementedError
+        """Extract atom elements from atom names.
+        
+        Populates the 'element' field of atoms by examining atom_name field.
+        Uses first character if it's not a number, otherwise second character.
+        """
+        if 'atom_name' not in self.atoms.DTYPE.names:
+            raise Exception("No atom names available to extract elements")
+            
+        for i, atom in enumerate(self.atoms):
+            atom_name = atom['atom_name']
+            if not atom_name:
+                continue
+                
+            # Get first character if not numeric, otherwise second character
+            element = atom_name[0] if atom_name[0] not in "0123456789" else atom_name[1]
+            self.atoms._data['element'][i] = element
 
     def compute_bonds(self, element_col: str = 'element', tolerance: float = 1.3) -> List[tuple]:
-        """Compute molecular bonds based on atomic distances and covalent radii.
-        
-        Args:
-            element_col: Column name containing element symbols
-            tolerance: Factor to multiply sum of covalent radii by
-        
-        Returns:
-            List of tuples containing atom indices of bonded atoms
-        """
-        # if no elemnt is avialable extract element froma atom_name
+        """Compute molecular bonds based on atomic distances and covalent radii."""
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
 
         coords = self.get_coordinates()
-        elements = self.atoms[element_col].values
+        elements = self.atoms._data[element_col]
         n_atoms = len(coords)
         
         # Compute all pairwise distances
         distances = squareform(pdist(coords))
         
-        # Get matrix of covalent radii sums
+        # Get matrix of covalent radii sums with adjusted tolerance for H-bonds
         radii_matrix = np.zeros((n_atoms, n_atoms))
         for i in range(n_atoms):
             for j in range(i+1, n_atoms):
                 try:
                     r1 = self._COVALENT_RADII[elements[i]]
                     r2 = self._COVALENT_RADII[elements[j]]
-                    radii_matrix[i,j] = radii_matrix[j,i] = (r1 + r2) * tolerance
+                    # Use higher tolerance for H-bonds
+                    local_tolerance = tolerance * 1.1 if ('H' in [elements[i], elements[j]]) else tolerance
+                    radii_matrix[i,j] = radii_matrix[j,i] = (r1 + r2) * local_tolerance
                 except KeyError:
-                    # If element not found, use a default value
-                    radii_matrix[i,j] = radii_matrix[j,i] = 2.0
+                    radii_matrix[i,j] = radii_matrix[j,i] = 2.0 * tolerance
         
         # Find bonds where distance is less than allowed maximum
         bonds = []
@@ -532,50 +580,69 @@ class Molecule:
         """Compute molecular angles based on existing bonds.
         
         Returns:
-            List of tuples (atom1, atom2, atom3, angle) where atom2 is the central atom
-            and angle is in degrees
+            List of tuples (atom1, central_atom, atom2, angle) where:
+            - angle is in degrees
+            - atoms are numbered starting from 1
+            - atom1 is always less than atom2
+            - angles are returned in sorted order
+            - each angle appears exactly once
         """
+        if not hasattr(self, 'bonds'):
+            self.bonds = []
+            
         if not self.bonds:
-            # compute bonds
-            _ = self.compute_bonds()
+            self.compute_bonds()
 
-        # Create dictionary of bonded atoms for each atom
+        # Create bond dictionary
         bond_dict = {}
         for a1, a2 in self.bonds:
             if a1 not in bond_dict:
-                bond_dict[a1] = set()
+                bond_dict[a1] = []
             if a2 not in bond_dict:
-                bond_dict[a2] = set()
-            bond_dict[a1].add(a2)
-            bond_dict[a2].add(a1)
+                bond_dict[a2] = []
+            bond_dict[a1].append(a2)
+            bond_dict[a2].append(a1)
 
-        # Find all possible angles
+        # Get coordinates and initialize angles list
+        coords = self.get_coordinates()
         angles = []
-        for central_atom in bond_dict:
-            # If atom has at least two bonds
-            if len(bond_dict[central_atom]) >= 2:
-                # Get all possible pairs of bonded atoms
-                for atom1, atom2 in combinations(bond_dict[central_atom], 2):
-                    # Get coordinates
-                    pos1 = self.atoms.loc[atom1, ['x', 'y', 'z']].values
-                    pos2 = self.atoms.loc[central_atom, ['x', 'y', 'z']].values
-                    pos3 = self.atoms.loc[atom2, ['x', 'y', 'z']].values
+        seen = set()
 
-                    # Calculate vectors
-                    v1 = pos1 - pos2
-                    v2 = pos3 - pos2
+        # Compute angles
+        for central in bond_dict:
+            if len(bond_dict[central]) < 2:
+                continue
+                
+            # Consider each pair of bonded atoms
+            for i, atom1 in enumerate(bond_dict[central]):
+                for atom2 in bond_dict[central][i+1:]:
+                    # Skip if we've seen this angle
+                    angle_key = tuple(sorted([atom1, central, atom2]))
+                    if angle_key in seen:
+                        continue
+                    seen.add(angle_key)
+                    
+                    # Get vectors (using 0-based indexing for coordinates)
+                    v1 = coords[atom1-1] - coords[central-1]
+                    v2 = coords[atom2-1] - coords[central-1]
+                    
+                    # Normalize vectors
+                    v1_norm = v1 / np.sqrt(np.sum(v1 * v1))
+                    v2_norm = v2 / np.sqrt(np.sum(v2 * v2))
+                    
+                    # Compute angle with extra numerical stability
+                    dot = np.sum(v1_norm * v2_norm)
+                    dot = max(-1.0, min(1.0, dot))  # Clamp to [-1, 1]
+                    angle = np.degrees(np.arccos(dot))
+                    
+                    # Store with consistent atom ordering
+                    angles.append((min(atom1, atom2), central, max(atom1, atom2), angle))
 
-                    # Calculate angle
-                    cos_angle = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-                    # Handle numerical errors
-                    cos_angle = min(1.0, max(-1.0, cos_angle))
-                    angle = np.degrees(np.arccos(cos_angle))
-
-                    angles.append((atom1, central_atom, atom2, angle))
-
+        # Sort angles by atoms for consistent ordering
+        angles.sort()
         self.angles = angles
         return angles
-    
+
     def to_pytorch_geometric(self, add_edge_features: bool = True) -> Data:
         """Convert molecular structure to PyTorch Geometric Data object.
         
@@ -673,6 +740,57 @@ class Molecule:
         # Set box if available
         if hasattr(data, 'box'):
             self.box = data.box.numpy()
+
+    def draw_molecule(self, scale_factor: float = 300) -> None:
+        """Draw the molecule in 3D using matplotlib.
+        
+        Args:
+            scale_factor: Factor to scale atom sizes by (multiplied by covalent radius)
+        """
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
+
+        # Compute bonds if not already done
+        if not self.bonds:
+            self.compute_bonds()
+
+        # Make sure elements are available
+        if 'element' not in self.atoms.DTYPE.names or not any(self.atoms._data['element']):
+            self._get_element()
+
+        # Create 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        coords = self.get_coordinates()
+        elements = self.atoms._data['element']
+
+        # Plot atoms
+        for i, element in enumerate(elements):
+            # Get color and size based on element
+            color = self._ELEMENT_COLORS.get(element, 'grey')
+            size = self._COVALENT_RADII.get(element, 1.0) * scale_factor
+
+            ax.scatter(coords[i, 0], coords[i, 1], coords[i, 2],
+                      color=color, s=size)
+
+        # Plot bonds
+        for bond in self.bonds:
+            start = coords[bond[0]-1]
+            end = coords[bond[1]-1]
+            ax.plot([start[0], end[0]], 
+                   [start[1], end[1]], 
+                   [start[2], end[2]], 
+                   color='black')
+
+        # Set equal aspect ratio
+        ax.set_box_aspect([1,1,1])
+        
+        return ax
+
+    def __len__(self) -> int:
+        """Return the number of atoms in the molecule."""
+        return len(self.atoms)
 
     def __repr__(self) -> str:
         return f"Molecule(name='{self.name}', n_atoms={len(self.atoms)})"

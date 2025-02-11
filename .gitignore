@@ -1,1 +1,6 @@
 venv/
+.coverage
+*__pycache__/
+*.pytest_cache/
+*example*
+*.pdb
