@@ -7,6 +7,8 @@ numpy>=1.20.0,<2.0.0  # Pin to NumPy 1.x
 pandas>=1.3.0
 scipy>=1.7.0
 
+matplotlib>=3.7.1# Plottingblack>=22.0.0pylint>=2.12.0mypy>=0.900# Type checking & development toolsnetworkx>=2.6.0torch-geometric>=2.0.0torch>=1.9.0# Graph and ML dependenciesscipy>=1.7.0pandas>=1.3.0numpy>=1.20.0,<2.0.0  # Pin to NumPy 1.x# Core dependenciespytest-cov>=4.0.0pytest>=7.0.0# Testing
+
 # Graph and ML dependencies
 torch>=1.9.0
 torch-geometric>=2.0.0
