@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from molecular_representations.molecule import Molecule
+from molecular_representations.atom_array import AtomArray  # Add this import
 
 @pytest.fixture
 def tmp_xyz_file(tmp_path):
@@ -290,5 +291,59 @@ END"""
         
         molecule.read_file(str(comment_file))
         assert len(molecule.atoms) == 1
+
+def test_center_of_mass():
+    """Test center of mass calculation with and without masses."""
+    mol = Molecule()
+    
+    # Create a simple test molecule with 3 atoms
+    atoms = AtomArray(3)
+    for i, x in enumerate([0.0, 1.0, 2.0]):
+        atoms._data[i]['x'] = x
+        atoms._data[i]['y'] = 0.0
+        atoms._data[i]['z'] = 0.0
+    
+    # Test without masses (should be geometric center)
+    mol.atoms = atoms
+    mol._coordinates_loaded = True
+    com = mol.center_of_mass()
+    assert np.allclose(com, [1.0, 0.0, 0.0])
+    
+    # Test with masses
+    for i, mass in enumerate([1.0, 2.0, 1.0]):  # Middle atom twice as heavy
+        atoms._data[i]['mass'] = mass
+    mol.atoms = atoms
+    # Expected: (0*1 + 1*2 + 2*1)/(1 + 2 + 1) = 1.0
+    com = mol.center_of_mass()
+    assert np.allclose(com, [1.0, 0.0, 0.0])
+    
+    # Test with unequal masses
+    for i, mass in enumerate([1.0, 4.0, 1.0]):  # Middle atom 4x as heavy
+        atoms._data[i]['mass'] = mass
+    mol.atoms = atoms
+    # Expected: (0*1 + 1*4 + 2*1)/(1 + 4 + 1) = 1.0
+    com = mol.center_of_mass()
+    expected = np.array([1.0, 0.0, 0.0])
+    assert np.allclose(com, expected)
+
+def test_center_of_mass_empty():
+    """Test center of mass calculation with empty molecule."""
+    mol = Molecule()
+    with pytest.raises(Exception):
+        mol.center_of_mass()  # Should raise because no coordinates are loaded
+
+def test_center_of_mass_single_atom():
+    """Test center of mass calculation with single atom."""
+    mol = Molecule()
+    atoms = AtomArray(1)
+    atoms._data[0]['x'] = 1.0
+    atoms._data[0]['y'] = 2.0
+    atoms._data[0]['z'] = 3.0
+    atoms._data[0]['mass'] = 1.0
+    
+    mol.atoms = atoms
+    mol._coordinates_loaded = True
+    com = mol.center_of_mass()
+    assert np.allclose(com, [1.0, 2.0, 3.0])
 
 
