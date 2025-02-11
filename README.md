@@ -89,7 +89,7 @@ plt.show()
 ```
 Example molecular visualization:
 
-![Example molecular visualization](docs/figures/molecule_example.png)img[figure/example_mol.png]
+![Example molecular visualization](figure/example_mol.png)
 
 ## Test Coverage
 
