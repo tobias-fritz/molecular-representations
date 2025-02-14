@@ -90,6 +90,7 @@ plt.show()
 Example molecular visualization:
 
 ![Example molecular visualization](figure/example_mol.png)
+![Example 2](figure/example_mol_large.png)
 
 ## Test Coverage
 
