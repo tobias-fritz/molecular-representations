@@ -10,63 +10,40 @@ import networkx as nx
 from typing import Optional, Dict, Any, Tuple
 from .atom_array import AtomArray
 import matplotlib.pyplot as plt
+from .methods.io import MoleculeIO
+from .methods.topology import MoleculeTopology
+from .methods.visualization import MoleculeVisualization
+from .methods.ml import MoleculeML
 
 @dataclass
 class Molecule:
     """A class representing a molecular structure with data from various file formats."""
     
     name: str = "Unnamed"
-    
-    # Core structure attributes
-    atoms: pd.DataFrame = field(default_factory=lambda: pd.DataFrame({
-        'atom_name': [], 'atom_type': [], 'resname': [], 'resid': [],
-        'chain': [], 'segment': [], 'x': [], 'y': [], 'z': [],
-        'charge': [], 'mass': [], 'element': [], 'occupancy': [], 
-        'beta': [], 'record_name': [],
-    }))
-    
-    # Topology information
+    atoms: AtomArray = field(default_factory=lambda: AtomArray(0))
     bonds: List[tuple] = field(default_factory=list)
     angles: List[tuple] = field(default_factory=list)
-    dihedrals: List[tuple] = field(default_factory=list)
-    impropers: List[tuple] = field(default_factory=list)  # Fix: Changed default_factory.list to default_factory=list
-    
-    # Additional properties
     box: Optional[np.ndarray] = None
-    properties: Dict = field(default_factory=dict)
-
-    # Covalent radii in Angstroms (from http://alvarez.sites.chemistry.harvard.edu/pdf/JournCompChem_1989_10_2_83.pdf)
-    _COVALENT_RADII = {
-        'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57,
-        'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Br': 1.20, 'I': 1.39,
-        'He': 0.28, 'Ne': 0.58, 'Ar': 1.06, 'Kr': 1.21, 'Xe': 1.40,
-        'Li': 1.28, 'Be': 0.96, 'B': 0.84, 'Na': 1.66, 'Mg': 1.41,
-        'Al': 1.21, 'Si': 1.11, 'K': 2.03, 'Ca': 1.76, 'Ga': 1.22,
-        'Ge': 1.20, 'As': 1.19, 'Se': 1.20, 'Rb': 2.20, 'Sr': 1.95,
-        'Fe': 1.32, 'Co': 1.26, 'Ni': 1.24, 'Cu': 1.32, 'Zn': 1.22,
-        'Pd': 1.39, 'Ag': 1.45, 'Cd': 1.44, 'Au': 1.36, 'Hg': 1.32
-    }
-
-    # Add color mapping for elements
+    
+    # Constants moved to MoleculeTopology class
     _ELEMENT_COLORS = {
-        'H': 'grey',
-        'C': 'k',
-        'N': 'b',
-        'O': 'r',
-        'F': 'green',
-        'P': 'orange',
-        'S': 'yellow',
-        'Cl': 'green',
-        'Br': 'brown',
-        'I': 'purple'
+        'H': 'grey', 'C': 'k', 'N': 'b', 'O': 'r',
+        'F': 'green', 'P': 'orange', 'S': 'yellow',
+        'Cl': 'green', 'Br': 'brown', 'I': 'purple'
     }
 
-    def __init__(self, name: str = "Unnamed", cord: Optional[str] = None, top: Optional[str] = None) -> None:
-        """Initialize molecule with optional topology and coordinate files."""
+    def __init__(self, name: str = "Unnamed", cord: Optional[str] = None, top: Optional[str] = None):
+        """Initialize molecule with optional topology and coordinate files.
+        
+        Args:
+            name: Molecule name
+            cord: Path to coordinate file
+            top: Path to topology file
+        """
         self.name = name
         self._coordinates_loaded = False
-        self.atoms = AtomArray(0)  # Initialize empty atom array
-        self.bonds = []  # Initialize empty bonds list
+        self.atoms = AtomArray(0)
+        self.bonds = []
         
         # Read topology first if provided
         if top:
@@ -75,6 +52,111 @@ class Molecule:
         # Then read coordinates if provided
         if cord:
             self.read_file(cord)
+    
+    def read_file(self, fname: str) -> None:
+        """Read atomic data from file."""
+        # Store existing state
+        existing_atoms = None
+        had_coordinates = False
+        had_elements = False
+        existing_coords = None
+        
+        if hasattr(self, 'atoms') and len(self.atoms) > 0:
+            existing_atoms = self.atoms.copy()
+            had_coordinates = self._coordinates_loaded
+            had_elements = 'element' in self.atoms.DTYPE.names and any(self.atoms._data['element'])
+            if had_coordinates:
+                existing_coords = self.get_coordinates()
+        
+        try:
+            # Read new file based on extension
+            if fname.endswith('.psf'):  # Topology file
+                new_atoms = MoleculeIO.read_psf(fname)
+                # Maintain coordinates if they existed
+                if existing_coords is not None:
+                    new_atoms.set_coordinates(existing_coords)
+                    self._coordinates_loaded = True
+                else:
+                    self._coordinates_loaded = False
+                self.atoms = new_atoms
+            else:  # Coordinate file
+                if fname.endswith('.pdb'):
+                    new_atoms = MoleculeIO.read_pdb(fname)
+                elif fname.endswith('.xyz'):
+                    new_atoms = MoleculeIO.read_xyz(fname)
+                elif fname.endswith('.crd'):
+                    new_atoms = MoleculeIO.read_crd(fname)
+                else:
+                    raise ValueError(f"Unsupported file format: {fname}")
+
+                # Merge if we had existing atoms
+                if existing_atoms is not None:
+                    new_atoms = MoleculeIO.merge_coordinates(existing_atoms, new_atoms)
+                    
+                self.atoms = new_atoms
+                self._coordinates_loaded = True
+
+            # Try to extract elements if needed
+            if not had_elements and 'atom_name' in self.atoms.DTYPE.names:
+                try:
+                    self._get_element()
+                except Exception:
+                    pass
+
+        except Exception as e:
+            if existing_atoms is not None:
+                self.atoms = existing_atoms
+                self._coordinates_loaded = had_coordinates
+            raise e
+
+    def write_file(self, fname: str) -> None:
+        """Write atomic data to file."""
+        if fname.endswith('.pdb'):
+            MoleculeIO.write_pdb(self.atoms, fname)
+        # Add other file formats...
+            
+    def compute_bonds(self, element_col: str = 'element', tolerance: float = 1.3) -> List[tuple]:
+        """Compute molecular bonds."""
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
+            
+        coords = self.get_coordinates()
+        elements = self.atoms._data[element_col]
+        self.bonds = MoleculeTopology.compute_bonds(coords, elements, tolerance)
+        return self.bonds
+
+    def compute_angles(self) -> List[tuple]:
+        """Compute molecular angles."""
+        if not hasattr(self, 'bonds') or not self.bonds:
+            self.compute_bonds()
+            
+        coords = self.get_coordinates()
+        self.angles = MoleculeTopology.compute_angles(coords, self.bonds)
+        return self.angles
+        
+    def draw_molecule(self, scale_factor: float = 300) -> plt.Axes:
+        """Draw the molecule in 3D."""
+        if not self._coordinates_loaded:
+            raise Exception("No coordinates loaded")
+
+        if not self.bonds:
+            self.compute_bonds()
+            
+        # Make sure elements are available
+        if 'element' not in self.atoms.DTYPE.names or not any(self.atoms._data['element']):
+            self._get_element()
+            
+        coords = self.get_coordinates()
+        elements = self.atoms._data['element']
+        
+        return MoleculeVisualization.draw_molecule(
+            coords=coords,
+            elements=elements,
+            bonds=self.bonds,
+            element_colors=self._ELEMENT_COLORS,
+            covalent_radii=MoleculeTopology._COVALENT_RADII,
+            scale_factor=scale_factor
+        )
 
     def _merge_coordinates(self, new_atoms: AtomArray) -> None:
         """Merge coordinates from new atoms into existing structure."""
@@ -94,131 +176,6 @@ class Molecule:
                 
         self._coordinates_loaded = True
 
-    def _read_crd(self, fname: str) -> None:
-        """Read atomic data from CHARMM CRD file"""
-        try:
-            with open(fname, 'r') as ff:
-                lines = [line.strip() for line in ff.readlines() if line.strip()]
-
-            if len(lines) < 2:
-                raise Exception("Invalid CRD file: insufficient lines")
-
-            # Get atom count from second line
-            try:
-                n_atoms = int(lines[1].split()[0])
-            except (ValueError, IndexError):
-                raise Exception("Invalid atom count in CRD file")
-
-            # Create new atom array for coordinates
-            atoms = AtomArray(n_atoms)
-            
-            # Parse atom lines starting from line 2
-            for i, line in enumerate(lines[2:n_atoms+2]):
-                try:
-                    parts = line.split()
-                    if len(parts) < 7:
-                        raise ValueError(f"Insufficient fields in line: {line}")
-                    
-                    # Parse coordinates from fixed positions
-                    x = float(parts[4])
-                    y = float(parts[5])
-                    z = float(parts[6])
-                    
-                    atoms['x'][i] = x
-                    atoms['y'][i] = y
-                    atoms['z'][i] = z
-                    
-                    # Store other fields
-                    atoms['atom_name'][i] = parts[3]
-                    atoms['resname'][i] = parts[2]
-                    atoms['resid'][i] = int(parts[1])
-                    atoms['segment'][i] = parts[7] if len(parts) > 7 else ""
-                    
-                except (ValueError, IndexError) as e:
-                    raise Exception(f"Error parsing line {i+3}: {line} - {str(e)}")
-
-            # Set coordinates flag
-            if hasattr(self, 'atoms') and len(self.atoms) > 0:
-                self._merge_coordinates(atoms)
-            else:
-                self.atoms = atoms
-                self._coordinates_loaded = True
-
-        except Exception as e:
-            raise Exception(f"Error reading CRD file {fname}: {str(e)}")
-
-    def read_file(self, fname: str) -> None:
-        """Read atomic data from file."""
-        # Store existing state
-        existing_atoms = None
-        had_coordinates = False
-        had_elements = False
-        
-        if hasattr(self, 'atoms') and len(self.atoms) > 0:
-            # Store current state
-            existing_atoms = self.atoms.copy()
-            had_coordinates = self._coordinates_loaded
-            had_elements = 'element' in self.atoms.DTYPE.names and any(self.atoms._data['element'])
-            existing_coords = self.get_coordinates() if had_coordinates else None
-        
-        try:
-            # Read new file
-            if fname.endswith(('.pdb', '.xyz', '.crd')):
-                # Reading coordinate file
-                old_atoms = self.atoms if hasattr(self, 'atoms') else None
-                
-                # Read the file
-                if fname.endswith('.pdb'):
-                    self._read_pdb(fname)
-                elif fname.endswith('.xyz'):
-                    self._read_xyz(fname)
-                else:  # CRD file
-                    self._read_crd(fname)
-                
-                # Try to extract elements from atom names if needed
-                if not had_elements and 'atom_name' in self.atoms.DTYPE.names:
-                    try:
-                        self._get_element()
-                    except Exception:
-                        pass  # Continue even if element detection fails
-                
-                # If we had previous atoms, verify and merge
-                if old_atoms is not None and len(old_atoms) > 0:
-                    if len(old_atoms) != len(self.atoms):
-                        raise Exception(f"Atom count mismatch between topology ({len(old_atoms)}) and coordinates ({len(self.atoms)})")
-                    new_atoms = self.atoms.copy()
-                    self.atoms = old_atoms
-                    self._merge_coordinates(new_atoms)
-                
-            elif fname.endswith('.psf'):
-                # Reading topology file
-                old_coords = None
-                if had_coordinates:
-                    old_coords = existing_coords
-                
-                self._read_psf(fname)
-                
-                # Try to extract elements from atom names if needed
-                if not had_elements and 'atom_name' in self.atoms.DTYPE.names:
-                    try:
-                        self._get_element()
-                    except Exception:
-                        pass  # Continue even if element detection fails
-                
-                if old_coords is not None:
-                    self.atoms.set_coordinates(old_coords)
-                    self._coordinates_loaded = True
-                    
-            else:
-                raise ValueError(f"Unsupported file format: {fname}")
-                
-        except Exception as e:
-            # Restore previous state on error
-            if existing_atoms is not None:
-                self.atoms = existing_atoms
-                self._coordinates_loaded = had_coordinates
-            raise e
-
     def _merge_topology(self, old_atoms: AtomArray) -> None:
         """Merge topology information from old atoms."""
         if len(old_atoms) != len(self.atoms):
@@ -237,163 +194,6 @@ class Molecule:
         # Restore coordinates if they existed
         if coords is not None:
             self.atoms.set_coordinates(coords)
-
-    def _read_pdb(self, fname: str) -> None:
-        """Read atomic data from PDB file"""
-        with open(fname, 'r') as ff:
-            # Collect both ATOM and HETATM records
-            lines = [line for line in ff.readlines() 
-                    if line.startswith(('ATOM', 'HETATM'))]
-        
-        if not lines:
-            raise Exception("No valid ATOM or HETATM records found in PDB file")
-            
-        # Pre-allocate atom array
-        atoms = AtomArray(len(lines))
-        
-        for i, line in enumerate(lines):
-            try:
-                # Parse fields directly into AtomArray
-                atoms['record_name'][i] = line[:6].strip()
-                atoms['atom_name'][i] = line[12:16].strip()  # Corrected indices for 4-char names
-                atoms['resname'][i] = line[17:20].strip()
-                atoms['chain'][i] = line[21:22].strip()
-                atoms['resid'][i] = int(line[22:26])
-                
-                # Coordinates need careful parsing
-                try:
-                    atoms['x'][i] = float(line[30:38].strip())
-                    atoms['y'][i] = float(line[38:46].strip())
-                    atoms['z'][i] = float(line[46:54].strip())
-                except ValueError:
-                    raise ValueError(f"Invalid coordinates in line: {line.strip()}")
-                
-                # Optional fields with default values
-                try:
-                    atoms['occupancy'][i] = float(line[54:60].strip() or "0.0")
-                except (ValueError, IndexError):
-                    atoms['occupancy'][i] = 0.0
-                    
-                try:
-                    atoms['beta'][i] = float(line[60:66].strip() or "0.0")
-                except (ValueError, IndexError):
-                    atoms['beta'][i] = 0.0
-                    
-                # Segment ID (if present)
-                if len(line) >= 77:
-                    atoms['segment'][i] = line[72:76].strip()
-                
-            except Exception as e:
-                raise Exception(f"Error parsing line {i+1}: {line.strip()} - {e}")
-        
-        self.atoms = atoms
-        self._coordinates_loaded = True  # Set flag when reading coordinate file
-
-    def _read_xyz(self, fname: str) -> None:
-        """Read atomic data from XYZ file"""
-        with open(fname, 'r') as ff:
-            lines = [line.strip() for line in ff.readlines() if line.strip()]
-            
-        if len(lines) < 3:  # Need at least count, comment, and one atom
-            raise Exception("Invalid XYZ file format: insufficient lines")
-            
-        try:
-            n_atoms = int(lines[0])
-        except ValueError:
-            raise Exception("Invalid XYZ file format: first line must be number of atoms")
-            
-        atom_lines = lines[2:]  # Skip header and comment
-        if len(atom_lines) != n_atoms:
-            raise Exception(f"XYZ file format error: expected {n_atoms} atoms but found {len(atom_lines)}")
-            
-        # Pre-allocate atom array
-        atoms = AtomArray(n_atoms)
-        
-        for i, line in enumerate(atom_lines):
-            try:
-                parts = line.split()
-                if len(parts) != 4:
-                    raise ValueError(f"Expected 4 values per line, got {len(parts)}")
-                    
-                atoms['atom_name'][i] = parts[0]
-                atoms['x'][i] = float(parts[1])
-                atoms['y'][i] = float(parts[2])
-                atoms['z'][i] = float(parts[3])
-                
-            except Exception as e:
-                raise Exception(f"Error parsing line {i+3}: {line} - {str(e)}")
-        
-        self.atoms = atoms
-        self._coordinates_loaded = True  # Set flag when reading coordinate file
-
-    def _read_psf(self, fname: str) -> None:
-        """Read atomic data from PSF file"""
-        try:
-            with open(fname, 'r') as ff:
-                # Keep all lines but strip whitespace
-                lines = [line.strip() for line in ff.readlines()]
-
-            if not lines or 'PSF' not in lines[0]:
-                raise Exception("Invalid PSF file format: missing PSF header")
-
-            # Find the NATOM section and count
-            natom_idx = None
-            n_atoms = 0
-            for i, line in enumerate(lines):
-                if '!NATOM' in line:
-                    try:
-                        n_atoms = int(line.split('!')[0].strip())
-                        natom_idx = i
-                        break
-                    except (ValueError, IndexError):
-                        raise Exception("Invalid NATOM section in PSF file")
-            
-            if natom_idx is None:
-                raise Exception("No NATOM section found in PSF file")
-
-            # Get atom lines, skip empty lines and comments
-            atom_lines = []
-            line_idx = natom_idx + 1
-            atoms_found = 0
-            
-            while atoms_found < n_atoms and line_idx < len(lines):
-                line = lines[line_idx].strip()
-                if line and not line.startswith('!'):  # Skip comments and empty lines
-                    atom_lines.append(line)
-                    atoms_found += 1
-                line_idx += 1
-            
-            if len(atom_lines) != n_atoms:
-                raise Exception(f"Expected {n_atoms} atoms but found {len(atom_lines)}")
-            
-            # Create atom array
-            atoms = AtomArray(n_atoms)
-            
-            # Parse atom lines
-            for i, line in enumerate(atom_lines):
-                try:
-                    # Handle fixed-width format with proper splitting
-                    parts = line.split()
-                    if len(parts) < 8:  # Need at least 8 fields
-                        raise ValueError(f"Missing required fields, got {len(parts)} fields")
-                    
-                    # Fix: Correct field indexing
-                    serial = int(parts[0])         # Atom serial number
-                    atoms['segment'][i] = parts[1]        # Segment name
-                    atoms['resid'][i] = int(parts[2])     # Residue ID
-                    atoms['resname'][i] = parts[3]        # Residue name
-                    atoms['atom_name'][i] = parts[4]      # Atom name
-                    atoms['atom_type'][i] = parts[5]      # Atom type
-                    atoms['charge'][i] = float(parts[6])  # Charge
-                    atoms['mass'][i] = float(parts[7])    # Mass
-                    
-                except (ValueError, IndexError) as e:
-                    raise Exception(f"Error parsing line {i+1}: {line} - {str(e)}")
-            
-            self.atoms = atoms
-            
-        except Exception as e:
-            raise Exception(f"Error reading PSF file: {str(e)}")
 
     def write_file(self, fname: str) -> None:
         """Write atomic data to file"""
@@ -541,126 +341,12 @@ class Molecule:
             element = atom_name[0] if atom_name[0] not in "0123456789" else atom_name[1]
             self.atoms._data['element'][i] = element
 
-    def compute_bonds(self, element_col: str = 'element', tolerance: float = 1.3) -> List[tuple]:
-        """Compute molecular bonds based on atomic distances and covalent radii."""
-        if not self._coordinates_loaded:
-            raise Exception("No coordinates loaded")
-
-        coords = self.get_coordinates()
-        elements = self.atoms._data[element_col]
-        n_atoms = len(coords)
-        
-        # Compute all pairwise distances
-        distances = squareform(pdist(coords))
-        
-        # Get matrix of covalent radii sums with adjusted tolerance for H-bonds
-        radii_matrix = np.zeros((n_atoms, n_atoms))
-        for i in range(n_atoms):
-            for j in range(i+1, n_atoms):
-                try:
-                    r1 = self._COVALENT_RADII[elements[i]]
-                    r2 = self._COVALENT_RADII[elements[j]]
-                    # Use higher tolerance for H-bonds
-                    local_tolerance = tolerance * 1.1 if ('H' in [elements[i], elements[j]]) else tolerance
-                    radii_matrix[i,j] = radii_matrix[j,i] = (r1 + r2) * local_tolerance
-                except KeyError:
-                    radii_matrix[i,j] = radii_matrix[j,i] = 2.0 * tolerance
-        
-        # Find bonds where distance is less than allowed maximum
-        bonds = []
-        for i in range(n_atoms):
-            for j in range(i+1, n_atoms):
-                if distances[i,j] <= radii_matrix[i,j]:
-                    bonds.append((i+1, j+1))  # +1 for 1-based indexing
-        
-        self.bonds = bonds
-        return bonds
-
-    def compute_angles(self) -> List[tuple]:
-        """Compute molecular angles based on existing bonds.
-        
-        Returns:
-            List of tuples (atom1, central_atom, atom2, angle) where:
-            - angle is in degrees
-            - atoms are numbered starting from 1
-            - atom1 is always less than atom2
-            - angles are returned in sorted order
-            - each angle appears exactly once
-        """
-        if not hasattr(self, 'bonds'):
-            self.bonds = []
-            
-        if not self.bonds:
-            self.compute_bonds()
-
-        # Create bond dictionary
-        bond_dict = {}
-        for a1, a2 in self.bonds:
-            if a1 not in bond_dict:
-                bond_dict[a1] = []
-            if a2 not in bond_dict:
-                bond_dict[a2] = []
-            bond_dict[a1].append(a2)
-            bond_dict[a2].append(a1)
-
-        # Get coordinates and initialize angles list
-        coords = self.get_coordinates()
-        angles = []
-        seen = set()
-
-        # Compute angles
-        for central in bond_dict:
-            if len(bond_dict[central]) < 2:
-                continue
-                
-            # Consider each pair of bonded atoms
-            for i, atom1 in enumerate(bond_dict[central]):
-                for atom2 in bond_dict[central][i+1:]:
-                    # Skip if we've seen this angle
-                    angle_key = tuple(sorted([atom1, central, atom2]))
-                    if angle_key in seen:
-                        continue
-                    seen.add(angle_key)
-                    
-                    # Get vectors (using 0-based indexing for coordinates)
-                    v1 = coords[atom1-1] - coords[central-1]
-                    v2 = coords[atom2-1] - coords[central-1]
-                    
-                    # Normalize vectors
-                    v1_norm = v1 / np.sqrt(np.sum(v1 * v1))
-                    v2_norm = v2 / np.sqrt(np.sum(v2 * v2))
-                    
-                    # Compute angle with extra numerical stability
-                    dot = np.sum(v1_norm * v2_norm)
-                    dot = max(-1.0, min(1.0, dot))  # Clamp to [-1, 1]
-                    angle = np.degrees(np.arccos(dot))
-                    
-                    # Store with consistent atom ordering
-                    angles.append((min(atom1, atom2), central, max(atom1, atom2), angle))
-
-        # Sort angles by atoms for consistent ordering
-        angles.sort()
-        self.angles = angles
-        return angles
-
     def to_pytorch_geometric(self, add_edge_features: bool = True) -> Data:
-        """Convert molecular structure to PyTorch Geometric Data object.
-        
-        Args:
-            add_edge_features: Whether to add bond distance features to edges
-            
-        Returns:
-            PyTorch Geometric Data object with:
-                - x: Node features (atomic properties)
-                - edge_index: Bond connectivity
-                - edge_attr: Bond features (distances, if requested)
-                - pos: 3D coordinates
-        """
-        # Ensure bonds are computed
+        """Convert molecular structure to PyTorch Geometric Data object."""
         if not self.bonds:
             self.compute_bonds()
             
-        # Create node features
+        # Create atomic features list
         atom_features = []
         for _, atom in enumerate(self.atoms):
             features = [
@@ -670,123 +356,32 @@ class Molecule:
             ]
             atom_features.append(features)
         
-        x = torch.tensor(atom_features, dtype=torch.float)
-        
-        # Create edge index from bonds (0-based indexing)
-        edge_index = torch.tensor([[b[0]-1, b[1]-1] for b in self.bonds], dtype=torch.long).t()
-        
-        # Get positions
-        pos = torch.tensor(self.get_coordinates(), dtype=torch.float)
-        
-        # Compute edge features if requested
-        edge_attr = None
-        if add_edge_features and edge_index.shape[1] > 0:
-            # Compute bond distances
-            src, dst = edge_index
-            edge_attr = torch.norm(pos[dst] - pos[src], dim=1, keepdim=True)
-            
-            # Add angle information if available
-            if self.angles:
-                angle_features = []
-                bond_pairs = {(min(b1, b2), max(b1, b2)) for b1, b2 in self.bonds}
-                for b1, b2 in zip(src, dst):
-                    # Find angles involving this bond
-                    bond_angles = [
-                        angle[3] for angle in self.angles 
-                        if (min(angle[0]-1, angle[2]-1), max(angle[0]-1, angle[2]-1)) == (min(b1, b2), max(b1, b2))
-                    ]
-                    avg_angle = torch.tensor([sum(bond_angles) / len(bond_angles)]) if bond_angles else torch.tensor([120.0])
-                    angle_features.append(avg_angle)
-                
-                angle_features = torch.stack(angle_features)
-                edge_attr = torch.cat([edge_attr, angle_features], dim=1)
-        
-        # Create data object
-        data = Data(
-            x=x,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-            pos=pos,
-            num_nodes=len(self.atoms)
+        return MoleculeML.to_pytorch_geometric(
+            coords=self.get_coordinates(),
+            bonds=self.bonds,
+            atomic_features=atom_features,
+            angles=self.angles if hasattr(self, 'angles') else None,
+            box=self.box,
+            add_edge_features=add_edge_features
         )
-        
-        # Add periodic boundary conditions if available
-        if self.box is not None:
-            data.box = torch.tensor(self.box, dtype=torch.float)
-        
-        return data
 
     def from_pytorch_geometric(self, data: Data) -> None:
-        """Initialize molecule from PyTorch Geometric Data object.
-        
-        Args:
-            data: PyTorch Geometric Data object
-        """
-        num_atoms = data.num_nodes
-        self.atoms = AtomArray(num_atoms)
+        """Initialize molecule from PyTorch Geometric Data object."""
+        coords, bonds, properties, box = MoleculeML.from_pytorch_geometric(data)
         
         # Set coordinates
-        self.atoms.set_coordinates(data.pos.numpy())
+        self.atoms.set_coordinates(coords)
+        self._coordinates_loaded = True
         
-        # Set bonds (convert to 1-based indexing)
-        self.bonds = [(int(src)+1, int(dst)+1) 
-                     for src, dst in data.edge_index.t().numpy()]
+        # Set bonds
+        self.bonds = bonds
         
-        # Set atomic properties from node features if they match expected format
-        if data.x is not None and data.x.shape[1] >= 3:
-            self.atoms['mass'] = data.x[:, 0].numpy()
-            self.atoms['charge'] = data.x[:, 1].numpy()
-        
+        # Set atomic properties
+        for key, values in properties.items():
+            self.atoms[key] = values
+            
         # Set box if available
-        if hasattr(data, 'box'):
-            self.box = data.box.numpy()
-
-    def draw_molecule(self, scale_factor: float = 300) -> None:
-        """Draw the molecule in 3D using matplotlib.
-        
-        Args:
-            scale_factor: Factor to scale atom sizes by (multiplied by covalent radius)
-        """
-        if not self._coordinates_loaded:
-            raise Exception("No coordinates loaded")
-
-        # Compute bonds if not already done
-        if not self.bonds:
-            self.compute_bonds()
-
-        # Make sure elements are available
-        if 'element' not in self.atoms.DTYPE.names or not any(self.atoms._data['element']):
-            self._get_element()
-
-        # Create 3D plot
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-
-        coords = self.get_coordinates()
-        elements = self.atoms._data['element']
-
-        # Plot atoms
-        for i, element in enumerate(elements):
-            # Get color and size based on element
-            color = self._ELEMENT_COLORS.get(element, 'grey')
-            size = self._COVALENT_RADII.get(element, 1.0) * scale_factor
-
-            ax.scatter(coords[i, 0], coords[i, 1], coords[i, 2],
-                      color=color, s=size)
-
-        # Plot bonds
-        for bond in self.bonds:
-            start = coords[bond[0]-1]
-            end = coords[bond[1]-1]
-            ax.plot([start[0], end[0]], 
-                   [start[1], end[1]], 
-                   [start[2], end[2]], 
-                   color='black')
-
-        # Set equal aspect ratio
-        ax.set_box_aspect([1,1,1])
-        
-        return ax
+        self.box = box
 
     def __len__(self) -> int:
         """Return the number of atoms in the molecule."""
